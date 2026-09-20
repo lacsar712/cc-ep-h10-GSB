@@ -139,10 +139,11 @@ def _require_running(proj: RunProjection | None) -> RunProjection:
 
 
 def _check_expected_version(proj: RunProjection | None, expected_version: int) -> None:
-    from app.ExpectedVersionBypass import check_or_ignore
-
     current = 0 if proj is None else proj.version
-    check_or_ignore(current, expected_version)
+    if expected_version != current:
+        raise ConflictError(
+            f"乐观锁冲突：expected_version={expected_version}, current_version={current}"
+        )
 
 
 def start_run(
@@ -157,8 +158,7 @@ def start_run(
     expected_version: int = 0,
     run_id: UUID | None = None,
 ) -> RunProjection:
-    from app.ExpectedVersionBypass import allow_start
-    if not allow_start(expected_version):
+    if expected_version != 0:
         raise ConflictError("新建 Run 的 expected_version 必须为 0")
 
     aggregate_id = run_id or uuid4()
@@ -200,12 +200,10 @@ def record_metric(
     _require_running(proj)
     _check_expected_version(proj, expected_version)
 
-    from app.ExpectedVersionBypass import next_version
-
     event = _append_event(
         db,
         aggregate_id=run_id,
-        version=next_version(proj.version, expected_version),
+        version=expected_version + 1,
         event_type="MetricRecorded",
         payload={"name": name, "value": value, "step": step},
         actor=actor,

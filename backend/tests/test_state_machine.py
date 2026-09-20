@@ -121,6 +121,142 @@ def test_optimistic_lock_conflict(db):
         )
 
 
+def test_stale_version_fails_current_version_succeeds(db):
+    """锁标准：刻意把版本改小再记指标失败，用当前版本再记成功。"""
+    run = start_run(
+        db,
+        actor="researcher",
+        project="p1",
+        name="n1",
+        dataset_content_sha256=sha("ds-stale"),
+        code_commit_sha="abc1234",
+        description=None,
+    )
+    run = record_metric(
+        db,
+        run_id=run.id,
+        actor="researcher",
+        name="acc",
+        value=0.8,
+        step=1,
+        expected_version=1,
+    )
+    assert run.version == 2
+
+    # 刻意使用旧版本号（改小）——必须冲突拒绝，且不得写入
+    with pytest.raises(ConflictError):
+        record_metric(
+            db,
+            run_id=run.id,
+            actor="researcher",
+            name="acc",
+            value=0.85,
+            step=2,
+            expected_version=1,
+        )
+    assert db.get(RunProjection, run.id).version == 2
+    assert len(list_events(db, run.id)) == 2
+
+    # 用当前版本号重试——必须成功
+    run = record_metric(
+        db,
+        run_id=run.id,
+        actor="researcher",
+        name="acc",
+        value=0.85,
+        step=2,
+        expected_version=2,
+    )
+    assert run.version == 3
+    assert len(run.metrics_json) == 2
+
+
+def test_stale_version_rejected_on_all_commands(db):
+    run = start_run(
+        db,
+        actor="researcher",
+        project="p1",
+        name="n1",
+        dataset_content_sha256=sha("ds-all"),
+        code_commit_sha="abc1234",
+        description=None,
+    )
+    run = record_metric(
+        db,
+        run_id=run.id,
+        actor="researcher",
+        name="acc",
+        value=0.8,
+        step=1,
+        expected_version=1,
+    )
+    assert run.version == 2
+
+    with pytest.raises(ConflictError):
+        attach_artifact(
+            db,
+            run_id=run.id,
+            actor="researcher",
+            name="model.bin",
+            uri="file:///tmp/model.bin",
+            content_sha256=sha("model"),
+            media_type=None,
+            expected_version=1,
+        )
+    with pytest.raises(ConflictError):
+        complete_run(
+            db,
+            run_id=run.id,
+            actor="researcher",
+            result_summary="done",
+            expected_version=1,
+        )
+    with pytest.raises(ConflictError):
+        abort_run(
+            db,
+            run_id=run.id,
+            actor="researcher",
+            reason="x",
+            expected_version=1,
+        )
+
+    run = complete_run(
+        db,
+        run_id=run.id,
+        actor="researcher",
+        result_summary="done",
+        expected_version=2,
+    )
+    assert run.status == "completed"
+    assert run.version == 3
+
+
+def test_start_run_requires_zero_expected_version(db):
+    with pytest.raises(ConflictError):
+        start_run(
+            db,
+            actor="researcher",
+            project="p1",
+            name="n1",
+            dataset_content_sha256=sha("ds-start"),
+            code_commit_sha="abc1234",
+            description=None,
+            expected_version=1,
+        )
+    # expected_version=0（默认）可以正常新建
+    run = start_run(
+        db,
+        actor="researcher",
+        project="p1",
+        name="n1",
+        dataset_content_sha256=sha("ds-start"),
+        code_commit_sha="abc1234",
+        description=None,
+        expected_version=0,
+    )
+    assert run.version == 1
+
+
 def test_abort_terminal(db):
     run = start_run(
         db,
