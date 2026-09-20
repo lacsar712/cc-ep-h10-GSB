@@ -121,6 +121,70 @@ def test_optimistic_lock_conflict(db):
         )
 
 
+def test_stale_version_rejected_current_version_accepted(db):
+    run = start_run(
+        db,
+        actor="researcher",
+        project="p1",
+        name="n1",
+        dataset_content_sha256=sha("ds5"),
+        code_commit_sha="abc1234",
+        description=None,
+    )
+    run = record_metric(
+        db,
+        run_id=run.id,
+        actor="researcher",
+        name="acc",
+        value=0.9,
+        step=1,
+        expected_version=run.version,
+    )
+    assert run.version == 2
+
+    # 刻意把版本改小（旧版本号）再记指标 → 乐观锁冲突，拒绝写入
+    with pytest.raises(ConflictError):
+        record_metric(
+            db,
+            run_id=run.id,
+            actor="researcher",
+            name="acc",
+            value=0.95,
+            step=2,
+            expected_version=run.version - 1,
+        )
+    # 冲突写入不得产生副作用
+    assert db.get(RunProjection, run.id).version == 2
+    assert len(list_events(db, run.id)) == 2
+
+    # 用当前版本再记 → 成功
+    run = record_metric(
+        db,
+        run_id=run.id,
+        actor="researcher",
+        name="acc",
+        value=0.95,
+        step=2,
+        expected_version=run.version,
+    )
+    assert run.version == 3
+    assert len(run.metrics_json) == 2
+
+
+def test_start_run_requires_expected_version_zero(db):
+    with pytest.raises(ConflictError):
+        start_run(
+            db,
+            actor="researcher",
+            project="p1",
+            name="n1",
+            dataset_content_sha256=sha("ds6"),
+            code_commit_sha="abc1234",
+            description=None,
+            expected_version=1,
+        )
+
+
 def test_abort_terminal(db):
     run = start_run(
         db,
